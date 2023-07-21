@@ -1,0 +1,1902 @@
+#!/usr/bin/env bash-*-Shell-script-functions*-
+
+###########################################################################
+### Author:  Panagiotis Velissariou <panagiotis.velissariou@noaa.gov>
+###
+### Version - 1.1
+###
+###   1.1 Sun Mar 06 2022
+###   1.0 Fri Dec 04 2020
+###########################################################################
+
+set +u
+
+###====================
+# Make sure that the current working directory is in the PATH
+[[ ! :$PATH: == *:".":* ]] && export PATH="${PATH}:."
+
+# Get the directory where the script is located
+if [[ $(uname -s) == Darwin ]]; then
+  src_name="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+  src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+else
+  src_name="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+  src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+fi
+
+lst="${src_dir:+${src_dir}/}functions_utilities ${src_dir:+${src_dir}/}scripts/functions_utilities functions_utilities"
+funcs=
+for ilst in ${lst}
+do
+  if [ -f "${ilst:-}" ]; then
+    funcs="${ilst}"
+    break
+  fi
+done
+
+if [ -n "${funcs:+1}" ]; then
+  source "${funcs}"
+
+  if [ $? -ne 0 ]; then
+    echo " ### ERROR :: in ${src_name}"
+    echo "     Cannot load the required file: ${funcs}"
+    echo "     Exiting now ..."
+    echo
+
+    unset src_name src_dir ilst funcs
+    return 1
+  fi
+else
+  echo " ### ERROR :: in ${src_name}"
+  echo "     Cannot load the required file: functions_utilities"
+  echo "     Exiting now ..."
+  echo
+
+  unset src_name src_dir ilst funcs
+  return 1
+fi
+
+unset src_name src_dir ilst funcs
+###====================
+
+
+export MY_COMPILING_SYTEMS="gnu, intel, pgi"
+export MY_COMPILER_DEFAULT="gnu"
+export MY_COMPILING_PLATFORMS="custom, linux, macosx, cheyenne, gaea, hera, jet, orion, tacc, wcoss, mistral, strand"
+
+########################################
+##### Atmospheric components
+MY_ATM_MODS="ATMESH PAHM"
+#MY_ATM_MODS="ATMESH WRF HWRF PAHM"
+
+##### Ocean components
+MY_OCN_MODS="ADCIRC FVCOM SCHISM"
+#MY_OCN_MODS="ADCIRC FVCOM ROMS SCHISM"
+
+##### Hydrologic components
+MY_HYD_MODS="NWM"
+
+##### Wave components
+MY_WAV_MODS="WW3 WW3DATA"
+
+##### Miscellaneous components
+MY_MSC_MODS="BARDATA"
+########################################
+
+#export MY_COMPONENT_DEFAULT="ATMESH ADCIRC WW3DATA"
+export MY_COMPONENT_DEFAULT=
+export MY_COMPONENT_LIST="${MY_ATM_MODS} ${MY_OCN_MODS} ${MY_WAV_MODS} ${MY_HYD_MODS} ${MY_MSC_MODS}"
+
+export MY_THIRDPARTY_LIST="DATETIME PARMETIS"
+
+
+##################################################
+### BEG:: MODELLING SYSTEM BUILD FUNCTIONS
+##################################################
+
+###========================================
+### ParseArgs()
+###
+### Usage:      ParseArgs args
+###
+### Parameters: args = the script options
+###
+### Returns:    0
+###
+### Echoes:     NONE
+###
+### Gets the supplied options to the script.
+###========================================
+ParseArgs()
+{
+  local nm_func=$( basename ${BASH_SOURCE[${#BASH_SOURCE[@]}-1]} )
+
+  local opt_all opt_opt opt_arg opt_chk
+
+  local t_VAR
+  local ans0 ans ival intN
+  local all_evars
+
+  all_evars="MY_ACCEPT_ALL MY_CLEAN MY_COMPILER MY_COMPONENT MY_THIRDPARTY MY_EXECUTABLES MY_OS
+             MY_PARALLEL MY_PARMAKE MY_PLATFORM MY_VERBOSE"
+
+  for ival in ${all_evars}; do unset __${ival}; done
+
+
+  __MY_ACCEPT_ALL=0
+  __MY_CLEAN=0
+  __MY_EXECUTABLES=
+  __MY_COMPILER="${MY_COMPILER_DEFAULT}"
+  __MY_COMPONENT="${MY_COMPONENT_DEFAULT}"
+  __MY_THIRDPARTY=
+  __MY_OS=
+  __MY_PARALLEL=1
+  __MY_PARMAKE=1
+  __MY_PLATFORM=
+  __MY_VERBOSE=
+          
+
+  # -----
+  # Process the function options
+  opt_all=( accept_all build_exec c clean compiler component tp third thirdparty 
+            j par parallel os plat platform v verbose h help )
+  opt_all=":$( echo "${opt_all[@]/#/-} ${opt_all[@]/#/--}" | sed 's/ /:/g' ):"
+
+  unset __OPTION_LIST
+  while test $# -gt 0; do
+    case "${1}" in
+      -[^-]*=* | --[^-]*=* )
+        opt_opt="$( toLOWER "$( echo "${1}" | sed 's/=.*//' )" )"
+        len=$(( ${#opt_opt} + 1 ))
+        opt_arg="$( strTrim "$( echo "${1:${len}}" )" 2 )"
+        [ "$( echo "${opt_all}" | egrep -o ":${opt_arg}:" )" ] && \
+          opt_arg=
+        ;;
+      -[^-]* | --[^-]* )
+        opt_opt="$( toLOWER "${1}" )"
+        opt_chk="$( toLOWER "$( echo "${2}" | sed 's/=.*//' )" )"
+        if [ "$( echo "${opt_all}" | egrep -o ":${opt_chk}:" )" ]; then
+          opt_arg=
+        else
+          opt_arg="$( strTrim "$( echo "${2}" )" )"
+        fi
+        ;;
+      *)
+        opt_opt=
+        opt_arg=
+        ;;
+    esac
+
+    case "${opt_opt}" in
+      -build_exec | --build_exec )
+          checkFuncOpt "--build_exec"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_EXECUTABLES="$( strTrim "${opt_arg}" )"
+            fi
+          fi
+        ;;
+      -c | --c | -clean | --clean )
+          checkFuncOpt "--clean"
+          if [ $? -eq 0 ]; then
+            __MY_CLEAN=1
+            if [ "X${opt_arg}" != "X" ]; then
+              if `isInteger "${opt_arg}"` ; then
+                __MY_CLEAN=$( echo "${opt_arg}" )
+                [ ${opt_arg} -le -3 ] && __MY_CLEAN=-3
+                [ ${opt_arg} -ge  2 ] && __MY_CLEAN=2
+              else
+                __MY_CLEAN=0
+                [ "$( getYesNo "${opt_arg}" )" = "yes" ] && __MY_CLEAN=1
+              fi
+            fi
+          fi
+        ;;
+      -compiler | --compiler )
+          checkFuncOpt "--compiler"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_COMPILER="$( echo "${opt_arg}" | sed 's/[[:space:]]//g' )"
+            fi
+          fi
+        ;;
+      -component | --component )
+          checkFuncOpt "--component"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_COMPONENT="$( strTrim "${opt_arg}" )"
+            fi
+          fi
+        ;;
+      -tp | --tp | -third | --third | -thirdparty | --thirdparty )
+          checkFuncOpt "--thirdparty"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_THIRDPARTY="$( strTrim "${opt_arg}" )"
+            fi
+          fi
+        ;;
+      -j | --j )
+          checkFuncOpt "--j"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_PARMAKE=1
+              t_VAR="$( getPosInteger "${opt_arg}" )"
+              [ ! -z "${t_VAR}" ] && __MY_PARMAKE=${t_VAR}
+            fi
+          fi
+        ;;
+      -par | --par | -parallel | --parallel )
+          checkFuncOpt "--parallel"
+          if [ $? -eq 0 ]; then
+            __MY_PARALLEL=1
+            if [ "X${opt_arg}" != "X" ]; then
+              if `isInteger "${opt_arg}"` ; then
+                __MY_PARALLEL=0
+                [ ${opt_arg} -ge 1 ] && __MY_PARALLEL=1
+              else
+                __MY_PARALLEL=0
+                [ "$( getYesNo "${opt_arg}" )" = "yes" ] && __MY_PARALLEL=1
+              fi
+            fi
+          fi
+        ;;
+      -os | --os )
+          checkFuncOpt "--os"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_OS="$( echo "${opt_arg}" | sed 's/[[:space:]]//g' )"
+            fi
+          fi
+        ;;
+      -plat | --plat | -platform | --platform)
+          checkFuncOpt "--platform"
+          if [ $? -eq 0 ]; then
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_PLATFORM="$( echo "${opt_arg}" | sed 's/[[:space:]]//g' )"
+            fi
+          fi
+        ;;
+      -v | --v | -verbose | --verbose )
+          checkFuncOpt "--verbose"
+          if [ $? -eq 0 ]; then
+            __MY_VERBOSE=b # This is suitable for GNU's make
+            if [ "X${opt_arg}" != "X" ]; then
+              __MY_VERBOSE="${opt_arg}"
+            fi
+            __MY_VERBOSE="$( getMakeVerbosity "${__MY_VERBOSE}" )"
+          fi
+        ;;
+      -y | --y | -yes | --yes )
+          checkFuncOpt "--yes"
+          if [ $? -eq 0 ]; then
+            __MY_ACCEPT_ALL=1
+            if [ "X${opt_arg}" != "X" ]; then
+              if `isInteger "${opt_arg}"` ; then
+                __MY_ACCEPT_ALL=$( echo "${opt_arg}" )
+                [ ${opt_arg} -le 0 ] && __MY_ACCEPT_ALL=0
+                [ ${opt_arg} -ge 1 ] && __MY_ACCEPT_ALL=1
+              else
+                __MY_ACCEPT_ALL=0
+                [ "$( getYesNo "${opt_arg}" )" = "yes" ] && __MY_ACCEPT_ALL=1
+              fi
+            fi
+          fi
+        ;;
+      -h | -help | --h | --help )
+          UsageBuild ${nm_func}
+        ;;
+      *) ;; # DEFAULT
+    esac
+    shift
+    opt_opt= 
+    opt_arg=
+  done
+  unset __OPTION_LIST
+  # -----
+
+  if [ -z "${__MY_OS}" ]; then
+    case "$(uname -s)" in
+      Darwin ) __MY_OS="macosx" ;;
+      Linux  ) __MY_OS="linux"  ;;
+            *) __MY_OS="linux"  ;; # DEFAULT
+    esac
+  fi
+
+  if [ -z "${__MY_PLATFORM}" ]; then
+    case "$(uname -s)" in
+      Darwin ) __MY_PLATFORM="macosx" ;;
+      Linux  ) __MY_PLATFORM="linux"  ;;
+            *) __MY_PLATFORM="linux"  ;; # DEFAULT
+    esac
+  fi
+
+  # Export the values of all __* variables.
+  for ival in ${all_evars}
+  do
+    ans0="$( eval "echo \${$(echo ${ival}):-}" )"
+    ans="$( eval "echo \${$(echo __${ival}):-}" )"
+    ans=${ans:-${ans0:-}}
+
+    eval "${ival}=\${ans}"
+    export ${ival}
+
+    unset __${ival}
+  done
+
+  return 0
+}
+
+###========================================
+### UsageBuild()
+###
+### Usage:      UsageBuild
+###
+### Parameters: NONE
+###
+### Returns : Exits on error
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### UsageBuild: Prints all usage options of the build script.
+###========================================
+UsageBuild()
+{
+  local nm="$( basename ${0} )"
+
+  echo
+  echo "Usage: \"${nm}\" [{-|--}option1{=|space}[option_value1]] [{-|--}option2{=|space}[option_value2]] ..."
+  echo
+
+  echo "  -h|-help|--h|--help"
+  echo "    Show this help screen."
+  echo
+  #---
+  echo "  -y|-yes|--y|--yes"
+  echo "    Automatically answer yes for all questions."
+  echo "    Default: 0|no (user is required to enter a yes/no response)."
+  echo
+  #---
+  echo "  -c|--c|-clean|--clean [=|space] \"0|1|2|-3|-2|-1|yes|no\" (OPTIONAL)."
+  echo "    Only clean the already compiled build system."
+  echo "    Default: 0|no."
+  echo "    Example: --clean= 1  Clean the system (make clean) and exit."
+  echo "                    = 2  Completely clean the system (make distclean) and exit."
+  echo "                    =-1  During the compilation stage, clean the system (make clean)"
+  echo "                         and continue with the compilation."
+  echo "                    =-2  During the compilation stage, completely clean the system (make distclean)"
+  echo "                         and continue with the  compilation."
+  echo "                    =-3  Do not clean anything but continue with the compilation."
+  echo "                    = 0  Do not clean anything (default)."
+  echo
+  #---
+  echo "  -compiler|--compiler [=|space] \"compiling_system\" (OPTIONAL)."
+  echo "    The compiling system to use (${MY_COMPILING_SYTEMS})."
+  echo "    Default: ${MY_COMPILER_DEFAULT}."
+  echo
+  #---
+  echo "  -component|--component [=|space] \"component_list\" (OPTIONAL)."
+  echo "    The component(s) to use (${MY_COMPONENT_LIST})."
+  echo "    Default: \"${MY_COMPONENT_DEFAULT}\"."
+  echo
+  #---
+  echo "  -tp|--tp|-third|--third|-thirdparty|--thirdparty [=|space] \"thirdparty_list\" (OPTIONAL)."
+  echo "    The third party libraries and programs to build."
+  echo "      ADCIRC might need the DATETIME library for its build and"
+  echo "      FVCOM requires the METIS libraries for its build."
+  echo "      SCHISM, WW3 require the METIS/PARMETIS libraries for their build."
+  echo "    If a component is ADCIRC, FVCOM, SCHISM  or WW3 then in the THIRDPARTY environment variable"
+  echo "    the required third party libraries will be added if they were not requested by the user."
+  echo "    Available third party libs/progs: ${MY_THIRDPARTY_LIST}"
+  echo "    Default: none."
+  echo
+  #---
+  echo "  -build_exec|--build_exec [=|space] \"executable_list\" (OPTIONAL)."
+  echo "    The executables(s) to build (e.g. --build_exec=\"padcirc pahm\")."
+  echo "    Default: none."
+  echo
+  #---
+  echo "  -j|--j [=|space] \"N\" (OPTIONAL)."
+  echo "    Define the number of make jobs to run simultaneously."
+  echo "    Default: 1."
+  echo
+  #---
+  echo "  -par|--par|-parallel|--parallel [=|space] \"0|1|yes|no\" (OPTIONAL)."
+  echo "    Activate the use of parallel compilers."
+  echo "    Default: 1|yes."
+  echo
+  #---
+  echo "  -os|--os [=|space] \"OS string\" (OPTIONAL)."
+  echo "    The name of the Operating system."
+  echo "    Supported OSes: linux macosx."
+  echo "    Default: current OS."
+  echo
+  #---
+  echo "  -plat|--plat|-platform|--platform [=|space] \"platform\" (OPTIONAL)."
+  echo "    The name of the compute HPC platform to consider."
+  echo "    Selecting a platform, environment modules specific to that platform are loaded"
+  echo "    and corresponding environment variables are set."
+  echo "    Supported platforms: ${MY_COMPILING_PLATFORMS}."
+  echo "    Default: OS."
+  echo
+  #---
+  echo "  -v|--v|-verbose|--verbose [=|space] \"a,b,v,i,j,m,n\" (any combination, OPTIONAL)."
+  echo "    Enable verbosity in the make files during compilation."
+  echo "      a (all)      : all types of debugging output are enabled"
+  echo "      n (none)     : disable all debugging currently enabled"
+  echo "      b (basic)    : basic debugging and whether the build was successful or not"
+  echo "      v (verbose)  : a level above basic"
+  echo "      i (implicit) : prints messages describing the implicit rule searches for each target"
+  echo "      j (jobs)     : prints messages giving details on the invocation of specific sub-commands"
+  echo "      m (makefile) : enables messages while rebuilding makefiles"
+  echo "    Default: none."
+  echo
+  #---
+
+  exit 0
+}
+
+###========================================
+### getNEMSEnvVars()
+###
+### Usage:      getNEMSEnvVars
+###
+### Parameters: NONE
+###
+### Returns : error status
+###
+### Exports : CLEAN COMPILER COMPONENT THIRDPARTY PARALLEL BUILD_EXECS OS PLATFORM PARMAKE VERBOSE
+###           NEMS_COMPILER NEMS_PARALLEL NEMS_PLATFORM MACHINE_ID FULL_MACHINE_ID
+###           APP_DIR APPMODS_DIR modFILE modDIR NEMS_DIR compFNAME
+###
+### Echoes  : NONE
+###
+### getNEMSEnvVars: Exports all the NEMS environment variables.
+###========================================
+ getNEMSEnvVars() {
+  local src_name src_dir component_ww3
+
+  if [ -n "${APP_DIR:+1}" ]; then
+    src_dir="${APP_DIR}"
+  else
+    if [ -n "${1:+1}" ]; then
+      src_dir="${1}"
+    else
+      # Get the directory where the script is located
+      if [[ $(uname -s) == Darwin ]]; then
+        readonly src_name="$( grealpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+        readonly src_dir="$(cd "$(dirname "${src_name}" )" && pwd -P)"
+      else
+        readonly src_name="$( realpath -s "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}" )"
+        readonly src_dir="$(cd "$(dirname "$(realpath -s "${BASH_SOURCE[0]}")" )" && pwd -P)"
+      fi
+    fi
+  fi
+  APP_DIR=${src_dir}
+
+  ACCEPT_ALL=${MY_ACCEPT_ALL}
+  export ACCEPT_ALL=${ACCEPT_ALL:-0}
+
+  CLEAN=${MY_CLEAN}
+  export CLEAN=${CLEAN:-0}
+
+  COMPILER="$( toLOWER "$( basename "${MY_COMPILER}" )" )"
+  export COMPILER=${COMPILER:-}
+
+  COMPONENT="$( toUPPER "${MY_COMPONENT}" )"
+  export COMPONENT=${COMPONENT:-}
+
+  THIRDPARTY="$( toUPPER "${MY_THIRDPARTY}" )"
+  export THIRDPARTY=${THIRDPARTY:-}
+
+  PARALLEL=${MY_PARALLEL}
+  export PARALLEL=${PARALLEL:-1}
+
+  BUILD_EXECS="${MY_EXECUTABLES}"
+  export BUILD_EXECS=${BUILD_EXECS:-}
+
+  OS="$( toLOWER "${MY_OS}" )"
+  export OS=${OS:-}
+
+  if [ -n "${MY_PLATFORM:+1}" ]; then
+    PLATFORM="$( toLOWER "${MY_PLATFORM}" )"
+  else
+    PLATFORM="${OS}"
+  fi
+  export PLATFORM=${PLATFORM:-}
+
+  PARMAKE=${MY_PARMAKE}
+  export PARMAKE=${PARMAKE:-1}
+
+  VERBOSE="${MY_VERBOSE}"
+  export VERBOSE=${VERBOSE:-}
+
+  ##### Customize the NEMS.x filename to include the component names
+  compFNAME=
+  if [ -n "${COMPONENT:+1}" ]; then
+    compFNAME="$( strTrim "$( toLOWER "${COMPONENT}" )" )"
+    compFNAME="$( echo "${compFNAME}" | sed 's/ /_/g' )"
+  fi
+  export compFNAME=${compFNAME:-}
+  #####
+
+  # Export some important environment variables for NEMS and for other models
+  export NEMS_COMPILER="${COMPILER:-}"
+  export NEMS_PARALLEL="${PARALLEL:-}"
+  export NEMS_PLATFORM="${PLATFORM:-}"
+  export MACHINE_ID="${PLATFORM:-}"
+  export FULL_MACHINE_ID="${PLATFORM:-}"
+
+  export APP_DIR="${APP_DIR:-}"
+  export APPMODS_DIR="${APPMODS_DIR:-${APP_DIR:+${APP_DIR}/}modulefiles}"
+
+  # This used in NEMS to get the configuration flags for the chosen compiler
+  # in the top level conf directory. Supported OSes are linux and macosx.
+  # Sometimes we might need to specify special flags not founf in the default
+  # files for s pecific platform
+  if [ ! -f "${APP_DIR}/conf/configure.nems.${FULL_MACHINE_ID}.${NEMS_COMPILER}" ]; then
+    export BUILD_TARGET=${OS}.${NEMS_COMPILER}
+  else
+    export BUILD_TARGET="${FULL_MACHINE_ID}.${NEMS_COMPILER}"
+  fi
+
+  if [ ! -f "${APP_DIR}/conf/externals.nems.${FULL_MACHINE_ID}" ]; then
+    export EXTERNALS_NEMS="externals.nems"
+  else
+    export EXTERNALS_NEMS="externals.nems.${FULL_MACHINE_ID}"
+  fi
+
+  # Get the project directories and perform a basic check on them
+  readonly NEMS_DIR="${APP_DIR}/NEMS"
+  if [ ! -f "${NEMS_DIR}/NEMSAppBuilder" ]; then
+    echo "The project directory \"${NEMS_DIR}\" does not appear to contain NEMSAppBuilder."
+    echo "Is this the correct NEMS directory?"
+    echo "You might need to set the environment variable APP_DIR before running this script."
+    echo "Exiting ..."
+    exit 1
+  fi
+  export NEMS_DIR
+
+  ##### Modulefile to source
+  modFILE="envmodules${COMPILER:+_${COMPILER}}${PLATFORM:+.${PLATFORM}}"
+  if [ ! -f "${APPMODS_DIR}/${modFILE}" ]; then
+    echo
+    echo "The modulefiles directory \"${modDIR}\" does not appear to contain the module file: ${modFILE}."
+    echo "Is this the correct \"modulefiles\" directory?"
+    echo "You might need to set the environment variable \"APPMODS_DIR\" to point to a custom modulefiles directory before running this script."
+    echo "Exiting ..."
+    echo
+    exit 1
+  else
+    # Source the environment module
+    export modFILE="${APPMODS_DIR}/${modFILE}"
+    source ${modFILE} 2>/dev/null
+  fi
+
+  # Get the compilers to use for this project compilation
+  getCompilerNames "${COMPILER}"
+
+  ##### Get the WW3 related environment variables
+  component_ww3="$( echo "${COMPONENT}" | sed 's/ /:/g' )"
+  if [[ :${component_ww3}: == *:"WW3":* ]]; then
+    export WW3_CONFOPT="${COMPILER}"
+    export WW3_COMP="${COMPILER}"
+    export WW3_F90="${F90:-${FC}}"
+    export WW3_CC="${CC}"
+    export WWATCH3_NETCDF=NC4
+  else
+    unset WW3_CONFOPT WW3_COMP WW3_F90 WW3_CC WWATCH3_NETCDF
+  fi
+  #####
+}
+
+###========================================
+### checkNEMSComponents()
+###
+### Usage:      checkNEMSComponents
+###
+### Parameters: NONE
+###
+### Returns : Exits on error
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### checkNEMSComponents: Checks if a user supplied modeling component is supported.
+###========================================
+ checkNEMSComponents() {
+  local comp_user comp_all
+  local icomp
+
+  comp_user="$( toUPPER "${COMPONENT}" )"
+  [ -z "${comp_user}" ] && \
+    comp_user="$( toUPPER "${MY_COMPONENT}" )"
+
+  comp_all="$( toUPPER "${MY_COMPONENT_LIST}" )"
+
+  for icomp in ${comp_user}
+  do
+    if [[ "${comp_all}" != *"${icomp}"* ]]; then
+      echo "The modeling component \"${icomp}\" is not supported."
+      echo "Please adjust your component list and re-run the script."
+      echo "Exiting ..."
+      exit 1
+      echo "icomp = ${icomp}"
+    fi
+  done
+}
+
+###========================================
+### getThirdParty()
+###
+### Usage:      getThirdParty
+###
+### Parameters: NONE
+###
+### Returns : Exits on error
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### getThirdParty: Checks if a user supplied modeling component is supported.
+###========================================
+ getThirdParty() {
+  local chk_component user_thirdparty
+  local chk_thirdparty tmp_thirdparty inst_dir
+  local icomp ivar iprt var val
+  local var_names var_parts
+  local tmp_inc tmp_lib chkLibHome
+
+
+  chk_thirdparty="$( toUPPER "${MY_THIRDPARTY_LIST}" )"
+  chk_thirdparty="$( echo "${chk_thirdparty}" | sed 's/[[:space:]]/:/g' )"
+
+  chk_component="$( toUPPER "${COMPONENT}" )"
+  [ -z "${chk_component}" ] && \
+    chk_component="$( toUPPER "${MY_COMPONENT}" )"
+  chk_component="$( echo "${chk_component}" | sed 's/[[:space:]]/:/g' )"
+
+  user_thirdparty="$( toUPPER "${THIRDPARTY}" )"
+  [ -z "${user_thirdparty}" ] && \
+    user_thirdparty="$( toUPPER "${MY_THIRDPARTY}" )"
+
+  tmp_thirdparty=
+  for icomp in ${user_thirdparty}
+  do
+    if [[ ":${chk_thirdparty}:" == *:"${icomp}":* ]]; then
+      tmp_thirdparty="${tmp_thirdparty} ${icomp}"
+    fi
+  done
+
+  ### Get the location of the thirdparty install directory
+  inst_dir="${APP_DIR:+${APP_DIR}/}THIRDPARTY_INSTALL"
+
+
+  ##########
+  # Preprocess the thirdparty related environment variables in case they were supplied by the user.
+  var_names="DATETIME PARMETIS"
+  var_parts="HOME _HOME DIR _DIR"
+  for ivar in ${var_names}
+  do
+    for iprt in ${var_parts}
+    do
+      var=${ivar}${iprt}
+      val="$( eval "echo \${$(echo ${var}):-}" )"
+      eval "${var}=\${val}"
+      [ -n "${val}" ] && break
+    done
+
+    if [ -n "${val:+1}" ]; then
+      for iprt in ${var_parts}
+      do
+        var=${ivar}${iprt}
+        eval "${var}=\${val}"
+        export ${var}
+      done
+    fi
+  done
+  ##########
+
+
+  ##########
+  # This is for ParMETIS/METIS libraries as they are required by different models
+  # like: FVCOM, SCHISM. WW3, ...
+  chkLibHome=${PARMETISHOME:-${PARMETIS_HOME}}
+  chkLibHome=${chkLibHome:-${PARMETISDIR}}
+  chkLibHome=${chkLibHome:-${PARMETIS_DIR}}
+  chkLibHome=${chkLibHome:-${inst_dir}}
+  tmp_inc="$( find -L ${chkLibHome}/include -maxdepth 1 -type f \( -name "metis.h" -o -name "parmetis.h" \) 2>/dev/null )"
+  tmp_lib="$( find -L ${chkLibHome}/lib -maxdepth 1 -type f \( -name "libparmetis.a" -o -name "libparmetis.so*" \) 2>/dev/null )"
+  if [ -n "${tmp_inc:+1}" ] && [ -n "${tmp_lib:+1}" ]; then
+    PARMETISHOME=${chkLibHome}
+    PARMETIS_HOME=${chkLibHome}
+    PARMETISDIR=${chkLibHome}
+    PARMETIS_DIR=${chkLibHome}
+  fi
+  ##########
+
+
+  # The following are used to make sure that the user is notified that a possibly essential
+  # third party library is not supplied by the user when compiling specific model components.
+
+  ### (1) ADCIRC
+  # For ADCIRC the user can specify that the CoastalApp may build the DATETIME library
+  # by using the --thirdparty="datetime" option. We issue a warning here to let the user
+  # know that he/she might need to specify this library.
+  if [[ ":${chk_component}:" == *:"ADCIRC":* ]]; then
+    if $( checkSUBSTR "${tmp_thirdparty}" DATETIME ) && \
+       [ -z "${DATETIME_HOME}" ] && [ -z "${DATETIMEHOME}" ]; then
+      procWarn "The DATETIME library might be needed for the compilation of ADCIRC" \
+               "in case the baroclinic effects are to be enabled in ADCIRC."
+    fi
+  fi
+
+  ### (2) SCHISM
+  # For SCHISM the user can specify that the CoastalApp may build the ParMETIS library
+  # by using the --thirdparty="parmetis" option. We issue a warning here to let the user
+  # know that he/she might need to specify this library.
+  if [[ ":${chk_component}:" == *:"SCHISM":* ]]; then
+    if ! $( checkSUBSTR "${tmp_thirdparty}" PARMETIS ) && \
+       [ -z "${PARMETIS_HOME}" ] && [ -z "${PARMETISHOME}" ]; then
+      procWarn "The PARMETIS library might be needed for the compilation of SCHISM." \
+               "Please supply the PARMETIS_HOME or PARMETISHOME environment" \
+               "variable that points to the location of the pre-compiled library or use the" \
+               "--thirdparty="parmetis" option in the build.sh script to compile the" \
+               "library from within CoastalApp (NOTE: need to download first the library" \
+               "by running the download_parmetis.sh script found in the scripts directory." \
+               "Finally, if the library is not provided, then SCHISM can use its internal" \
+               "version of ParMETIS or the NO_PARMETIS option (OFF by default)."
+    fi
+  fi
+
+  ### (3) FVCOM
+  # For FVCOM the user can specify that the CoastalApp may build the ParMETIS library
+  # by using the --thirdparty="parmetis" option. We issue a warning here to let the user
+  # know that he/she might need to specify this library.
+  if [[ ":${chk_component}:" == *:"FVCOM":* ]]; then
+    if ! $( checkSUBSTR "${tmp_thirdparty}" PARMETIS ) && \
+       [ -z "${PARMETIS_HOME}" ] && [ -z "${PARMETISHOME}" ]; then
+      procError "The METIS library is needed for the compilation of FVCOM." \
+                "Please supply the PARMETIS_HOME or PARMETISHOME environment" \
+                "variable that points to the location of the pre-compiled library or use the" \
+                "--thirdparty="parmetis" option in the build.sh script to compile the" \
+                "library from within CoastalApp (NOTE: need to download first the library" \
+                "by running the download_parmetis.sh script found in the scripts directory."
+    fi
+  fi
+
+  ### (4) WW3
+  # For WW3 the user should specify the location of the ParMETIS library or to use
+  # the --thirdparty="parmetis" option. We issue an error here to let the user
+  # know that he/she need to specify this library for WW3.
+  if [[ ":${chk_component}:" == *:"WW3":* ]]; then
+    if ! $( checkSUBSTR "${tmp_thirdparty}" PARMETIS ) && \
+       [ -z "${PARMETIS_HOME}" ] && [ -z "${PARMETISHOME}" ]; then
+      procError "The PARMETIS library is needed for the compilation of WW3." \
+                "Please supply the PARMETIS_HOME or PARMETISHOME environment" \
+                "variable that points to the location of the pre-compiled library or use the" \
+                "--thirdparty="parmetis" option in the build.sh script to compile the" \
+                "library from within CoastalApp (NOTE: need to download first the library" \
+                "by running the download_parmetis.sh script found in the scripts directory."
+    fi
+  fi
+
+  user_thirdparty="$( strSort "${tmp_thirdparty}" )"
+  
+  export THIRDPARTY=${user_thirdparty}
+}
+
+###========================================
+### compileDateTime()
+###
+### Usage:      compileDateTime src_dir
+###
+### Parameters: src_dir = the application root directory
+###
+### Returns : error status
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### compileDateTime: Uses environment variables to compile the application.
+###========================================
+compileDateTime() {
+  local root_dir src_dir cmake_flags
+  local bld_dir lib_dir inc_dir inst_dir
+  local i tmp_inc tmp_lib
+  local err tpDateTimeRequested
+
+
+  err=0
+  tpDateTimeRequested=0
+
+
+  # First check if the user explicitly requested to build DateTime
+  # from the thirdparty_open directory.
+  for iPart in ${THIRDPARTY}
+  do
+    case "$( toUPPER ${iPart} )" in
+      DATETIME)
+        tpDateTimeRequested=1
+        break
+        ;;
+      *)
+        ;; #Do Nothing
+    esac
+  done
+
+
+  ######################
+  ### BEG :: thirdparty_open build
+  ### This part of the code is executed only if the user requested
+  ### to build the library from the thirdparty_open directory.
+  ### This precedes any environment settings.
+  ######################
+  if [ ${tpDateTimeRequested:-0} -ge 1 ]; then
+    ### Get the location of the third party directory
+      ### Get the location of the third party directory
+      checkDIR -rx "${1}"
+      if [ $? -eq 0 ]; then
+        root_dir="${1}"
+      else
+        root_dir="${APP_DIR:+${APP_DIR}/}thirdparty_open"
+      fi
+
+    ### Get the location of the install directory
+    inst_dir="${APP_DIR:+${APP_DIR}/}THIRDPARTY_INSTALL"
+
+
+    ##########
+    ### Try to get all the required directories to compile the application 
+    ##########
+    src_dir="$( find ${root_dir} -maxdepth 1 -type d -iname "*DATETIME*" | head -n 1 )"
+    if [ -z "${src_dir}" ] || [ ! -d "${src_dir}" ]; then
+      procError "the source directory for the DateTime library is not a valid directory:" \
+                "  srcDIR = ${src_dir:-NOTFOUND}" \
+                "searched in rootDIR = ${root_dir:-NOTFOUND}"
+    fi
+
+    bld_dir=${src_dir}/build
+    lib_dir=${src_dir}/lib
+    inc_dir=${src_dir}/include
+
+    ### Remove/Clean the previously compiled programs and libraries
+    for i in ${bld_dir} ${lib_dir} ${inc_dir}
+    do
+      deleteDIR "${i}"
+    done
+    ##########
+
+
+    ### Set the compilation flags for cmake
+    cmake_flags="-DCMAKE_BUILD_TYPE=Release"
+    [ -n "${VERBOSE:+1}" ] && cmake_flags+=" -DCMAKE_VERBOSE_MAKEFILE=TRUE"
+
+    cmake_flags+=" -DCMAKE_Fortran_COMPILER=${F90:-${FC}}"
+    [ -n "${FFLAGS:+1}" ] && cmake_flags+=" -DCMAKE_Fortran_FLAGS=${FFLAGS}"
+
+
+    ##########
+    ### Run cmake to configure the application
+    ##########
+    eval "cmake -S ${src_dir} -B ${bld_dir} ${cmake_flags}"
+    err=$?
+
+    if [ ${err:-0} -ne 0 ]; then
+      procError "the configuration of the DateTime library source failed" \
+                "tried to run the cmake command as:" \
+                "cmake -S ${src_dir} -B ${bld_dir} ${cmake_flags}"
+    fi
+    ##########
+
+
+    ##########
+    ### Run cmake to build the application
+    ##########
+    eval "cmake --build ${bld_dir}"
+    err=$?
+
+    if [ ${err:-0} -ne 0 ]; then
+      procError "the compilation of the DateTime library failed" \
+                "tried to run the cmake command as:" \
+                "cmake --build ${bld_dir}"
+    fi
+    ##########
+
+
+    ##########
+    ### Install the application files
+    ##########
+    lib_dir=${inst_dir}/lib
+    inc_dir=${inst_dir}/include
+
+    for i in ${lib_dir} ${inc_dir}
+    do
+      makeDIR "${i}"
+    done
+
+    install -m 0644 ${bld_dir}/lib/*.a ${lib_dir}/
+    err=$?
+
+    install -m 0644 ${bld_dir}/include/* ${inc_dir}/
+    err=$?
+    ##########
+
+    ##########
+    ### Remove/Clean the compiled programs and libraries
+    ##########
+    lib_dir=${src_dir}/lib
+    inc_dir=${src_dir}/include
+
+    if [ ${err:-0} -eq 0 ]; then
+      for i in ${bld_dir} ${lib_dir} ${inc_dir}
+      do
+        deleteDIR "${i}"
+      done
+    fi
+    ##########
+
+
+    export DATETIMEHOME="${inst_dir}"
+    export DATETIME=enable
+    procWarn "Setting the following variables:" \
+             "   DATETIMEHOME = ${DATETIMEHOME}" \
+             "   DATETIME     = ${DATETIME}"
+    
+
+    return ${err}
+  fi
+  ######################
+  ### END :: thirdparty_open build
+  ######################
+
+
+  ######################
+  ### BEG :: Use pre-compiled libraries
+  ######################
+  if [ ${tpDateTimeRequested:-0} -le 0 ]; then
+    # Get the location of the pre-compiled third party libraries for DATETIME.
+    if [ -n "${DATETIMEHOME}" ]; then
+      checkDIR -rx "${DATETIMEHOME}"
+      if [ $? -eq 0 ]; then
+        tmp_inc="$( find -L ${DATETIMEHOME}/include -maxdepth 1 -type f -name "datetime_module.mod" | head -1 )"
+        tmp_lib="$( find -L ${DATETIMEHOME}/lib -maxdepth 1 -type f -name "libdatetime.*" | head -1 )"
+        if [ -n "${tmp_inc:+1}" ] && [ -n "${tmp_lib:+1}" ]; then
+          export DATETIMEHOME=${DATETIMEHOME}
+          export DATETIME=enable
+          procWarn "Setting the following variables:" \
+                   "   DATETIMEHOME = ${DATETIMEHOME}" \
+                   "   DATETIME     = ${DATETIME}"
+          return 0
+        else
+          procError "Could not locate libdatetime in DATETIMEHOME = ${DATETIMEHOME}." \
+                    "Is DATETIMEHOME environment variable set properly?"
+        fi
+      else
+        procError "DATETIMEHOME = ${DATETIMEHOME} is not a valid directory." \
+                  "Is DATETIMEHOME environment variable set properly?"
+      fi
+    fi
+  fi
+  ######################
+  ### END :: Use pre-compiled libraries
+  ######################
+}
+
+###========================================
+### compileMetis()
+###
+### Usage:      compileMetis src_dir
+###
+### Parameters: src_dir = the application root directory
+###
+### Returns : error status
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### compileMetis: Uses environment variables to compile the application.
+###========================================
+compileMetis() {
+  local root_dir src_dir gklib_dir metis_dir make_flags
+  local loc_dir bin_dir lib_dir inc_dir inst_dir
+  local i tmp_inc tmp_lib compiledLIB
+  local err bits64 tpMetisRequested
+  local typeParMETIS
+
+
+  err=0
+  bits64=0   # It seems the building ParMETIS with the 64 bit flag on produces a buggy build
+             # for ParMETIS 4.0.3
+             # If necessary, we may want to debug this issue
+  tpMetisRequested=0
+  compiledLIB=0
+
+
+  # First check if the user explicitly requested to build ParMetis
+  # from the thirdparty_open directory. It is the user's responsibility
+  # to download ParMetis into the thirdparty_open directory
+  # (CoastalApp does not ship with ParMetis).
+  for iPart in ${THIRDPARTY}
+  do
+    case "$( toUPPER ${iPart} )" in
+      METIS|PARMETIS)
+        tpMetisRequested=1
+        break
+        ;;
+      *)
+        ;; #Do Nothing
+    esac
+  done
+
+
+  ######################
+  ### BEG :: thirdparty_open build
+  ### This part of the code is executed only if the user requested
+  ### to build the library from the thirdparty_open directory.
+  ### This precedes the environment settings.
+  ######################
+  if [ ${tpMetisRequested:-0} -ge 1 ]; then
+    ### Get the location of the third party directory
+    checkDIR -rx "${1}"
+    if [ $? -eq 0 ]; then
+      root_dir="${1}"
+    else
+      root_dir="${APP_DIR:+${APP_DIR}/}thirdparty_open"
+    fi
+
+    ### Get the location of the install directory
+    inst_dir="${APP_DIR:+${APP_DIR}/}THIRDPARTY_INSTALL"
+
+
+    ##########
+    ### Try to get all the required directories to compile the application 
+    ##########
+    src_dir="$( find ${root_dir} -maxdepth 1 -type d -iname "*ParMETIS*" | head -n 1 )"
+    if [ -z "${src_dir}" ] || [ ! -d "${src_dir}" ]; then
+      procError "the source directory for the ParMetis/Metis library is not a valid directory:" \
+                "  srcDIR = ${src_dir:-NOTFOUND}" \
+                "searched in rootDIR = ${root_dir:-NOTFOUND}"
+    fi
+
+    ### Remove/Clean the previously compiled programs and libraries
+    find ${src_dir} -type d -name build -exec rm -rf {} \; >/dev/null 2>&1
+    ##########
+
+    loc_dir=${src_dir}/del
+    makeDIR ${loc_dir}
+
+
+    ##########
+    ### Try to get the version of ParMETIS we are using
+    ##########
+    # This is a stupid hack to determine the version of ParMETIS we are using.
+    #  typeParMETIS=GITHUB denotes that the user cloned the GitHub version of ParMETIS
+    #  typeParMETIS=403 denotes that the user downloaded the old 4.0.3 version of ParMETIS
+    
+    if [ -e ${src_dir}/README.md ]; then
+      typeParMETIS=GITHUB
+    else
+      typeParMETIS=403
+    fi
+    ##########
+
+
+    #################### BEG:: GITHUB ####################
+    ### This is for the GitHub version
+    if [ "${typeParMETIS:-UNDEF}" == "GITHUB" ]; then
+      compiledLIB=1
+
+      ##########
+      ### Run make/cmake to configure the application
+      ##########
+      ### (1) configure GKlib if the directory exists
+      make_flags="CC=${CC:-gcc} CXX=${CXX:-g++} cc=${CC:-gcc} cxx=${CXX:-g++} CFLAGS=\"-D_POSIX_C_SOURCE=199309L ${CFLAGS}\""
+      gklib_dir="$( find ${src_dir} -type d -iname "GKlib" | head -n 1 )"
+   
+      if [ -d "${gklib_dir}" ]; then
+        pushd ${gklib_dir} >/dev/null 2>&1
+          eval "make ${make_flags} openmp=ON prefix=${loc_dir} config"
+          err=$?
+
+          if [ ${err:-0} -ne 0 ]; then
+            procError "the configuration of the GKlib library source failed" \
+                      "tried to run the make command as:" \
+                      "make ${make_flags} prefix=${loc_dir} config"
+          fi
+
+          make install
+          err=$?
+
+          if [ ${err:-0} -ne 0 ]; then
+            procError "the compilation of the GKlib library failed" \
+                      "tried to run the make command as:" \
+                      "make install"
+          fi
+        popd >/dev/null 2>&1
+      else
+        procError "the directory of the GKlib source could not be located" \
+                  "inside the ${src_dir} folder."
+      fi
+
+      ### (2) configure metis if the directory exists
+      if [ "${bits64:-0}" -ge 1 ]; then
+        make_flags="CC=${CC:-gcc} CXX=${CXX:-g++} cc=${CC:-gcc} cxx=${CXX:-g++} CFLAGS=${CFLAGS} i64=1 r64=1"
+      else
+        make_flags="CC=${CC:-gcc} CXX=${CXX:-g++} cc=${CC:-gcc} cxx=${CXX:-g++} CFLAGS=${CFLAGS}"
+      fi
+      metis_dir="$( find ${src_dir} -type d -iname "metis" | head -n 1 )"
+
+      if [ -d "${metis_dir}" ]; then
+        pushd ${metis_dir} >/dev/null 2>&1
+          if [ "${bits64:-0}" -ge 1 ]; then
+            sed -i -e 's@^#define[[:space:]]*IDXTYPEWIDTH[[:space:]]*32@#define IDXTYPEWIDTH 64@' include/metis.h
+            sed -i -e 's@^#define[[:space:]]*REALTYPEWIDTH[[:space:]]*32@#define REALTYPEWIDTH 64@' include/metis.h
+          else
+            sed -i -e 's@^#define[[:space:]]*IDXTYPEWIDTH[[:space:]]*64@#define IDXTYPEWIDTH 32@' include/metis.h
+            sed -i -e 's@^#define[[:space:]]*REALTYPEWIDTH[[:space:]]*64@#define REALTYPEWIDTH 32@' include/metis.h
+          fi
+        
+          eval "make ${make_flags} openmp=ON gklib_path=${gklib_dir} prefix=${loc_dir} config"
+          err=$?
+
+          if [ ${err:-0} -ne 0 ]; then
+            procError "the configuration of the METIS library source failed" \
+                      "tried to run the make command as:" \
+                      "make ${make_flags} gklib_path=${gklib_dir} prefix=${loc_dir} config"
+          fi
+
+          make install
+          err=$?
+
+          if [ ${err:-0} -ne 0 ]; then
+            procError "the compilation of the METIS library failed" \
+                      "tried to run the make command as:" \
+                      "make install"
+          fi
+        popd >/dev/null 2>&1
+      else
+        procError "the directory of the METIS source could not be located" \
+                  "inside the ${src_dir} folder."
+      fi
+
+      ### (3) configure parmetis if the directory exists
+      make_flags="CC=${PCC:-mpicc} CXX=${PCXX:-mpicxx} cc=${PCC:-mpicc} cxx=${PCXX:-mpicxx} CFLAGS=${CFLAGS}"
+      # This is a workaround because the metis/include/metis.h does not defile
+      # IDXTYPEWIDTH and REALTYPEWIDTH it is defined thought after processing metis/include/metis.h
+      # and installing the metis.h file in the installation include directory.
+      if [ "${bits64:-0}" -ge 1 ]; then
+        make_flags+=" CONFIG_FLAGS1=-DCMAKE_C_FLAGS='\"-DIDXTYPEWIDTH=64 -DREALTYPEWIDTH=64\"'"
+      else
+        make_flags+=" CONFIG_FLAGS1=-DCMAKE_C_FLAGS='\"-DIDXTYPEWIDTH=32 -DREALTYPEWIDTH=32\"'"
+      fi
+      this_dir="${src_dir}"
+
+      pushd ${this_dir} >/dev/null 2>&1
+        sed -i -e 's@\(CONFIG_FLAGS[[:space:]]*=[[:space:]]*-DCMAKE_VERBOSE_MAKEFILE=1[[:space:]]*\)$@\1 \$(CONFIG_FLAGS1)@' Makefile
+        eval "make "${make_flags}" openmp=ON gklib_path=${gklib_dir} metis_path=${metis_dir} prefix=${loc_dir} config"
+        err=$?
+
+        if [ ${err:-0} -ne 0 ]; then
+          procError "the configuration of the ParMETIS library source failed" \
+                    "tried to run the make command as:" \
+                    "make ${make_flags} gklib_path=${gklib_dir} metis_path=${metis_dir} prefix=${loc_dir} config"
+        fi
+
+        make install
+        err=$?
+
+        if [ ${err:-0} -ne 0 ]; then
+          procError "the compilation of the ParMETIS library failed" \
+                    "tried to run the make command as:" \
+                    "make install"
+        fi
+      popd >/dev/null 2>&1
+      ##########
+    fi
+    #################### END:: GITHUB ####################
+
+
+    #################### BEG:: 403 ####################
+    ### This is for the 4.0.3 version
+    if [ "${typeParMETIS:-UNDEF}" == "403" ]; then
+      compiledLIB=1
+
+      ##########
+      ### Run make/cmake to configure the application
+      ##########
+      ### (1) configure metis if the directory exists
+      if [ "${bits64:-0}" -ge 1 ]; then
+        make_flags="CC=${CC:-gcc} CXX=${CXX:-g++} cc=${CC:-gcc} cxx=${CXX:-g++} CFLAGS=${CFLAGS} i64=1 r64=1"
+      else
+        make_flags="CC=${CC:-gcc} CXX=${CXX:-g++} cc=${CC:-gcc} cxx=${CXX:-g++} CFLAGS=${CFLAGS}"
+      fi
+      gklib_dir="$( find ${src_dir} -type d -iname "GKlib" | head -n 1 )"
+      metis_dir="$( find ${src_dir} -type d -iname "metis" | head -n 1 )"
+
+      if [ -d "${metis_dir}" ]; then
+        pushd ${metis_dir} >/dev/null 2>&1
+          if [ "${bits64:-0}" -ge 1 ]; then
+            sed -i -e 's@^#define[[:space:]]*IDXTYPEWIDTH[[:space:]]*32@#define IDXTYPEWIDTH 64@' include/metis.h
+            sed -i -e 's@^#define[[:space:]]*REALTYPEWIDTH[[:space:]]*32@#define REALTYPEWIDTH 64@' include/metis.h
+          else
+            sed -i -e 's@^#define[[:space:]]*IDXTYPEWIDTH[[:space:]]*64@#define IDXTYPEWIDTH 32@' include/metis.h
+            sed -i -e 's@^#define[[:space:]]*REALTYPEWIDTH[[:space:]]*64@#define REALTYPEWIDTH 32@' include/metis.h
+          fi
+        
+         eval "make ${make_flags} openmp=ON gklib_path=${gklib_dir} prefix=${loc_dir} config"
+         err=$?
+
+         if [ ${err:-0} -ne 0 ]; then
+           procError "the configuration of the METIS library source failed" \
+                     "tried to run the make command as:" \
+                     "make ${make_flags} gklib_path=${gklib_dir} prefix=${loc_dir} config"
+         fi
+
+         make install
+         err=$?
+
+         if [ ${err:-0} -ne 0 ]; then
+           procError "the compilation of the METIS library failed" \
+                     "tried to run the make command as:" \
+                     "make install"
+         fi
+        popd >/dev/null 2>&1
+      else
+        procError "the directory of the METIS source could not be located" \
+                  "inside the ${src_dir} folder."
+      fi
+
+      ### (2) configure parmetis if the directory exists
+      make_flags="CC=${PCC:-mpicc} CXX=${PCXX:-mpicxx} cc=${PCC:-mpicc} cxx=${PCXX:-mpicxx} CFLAGS=${CFLAGS}"
+      # This is a workaround because the metis/include/metis.h does not defile
+      # IDXTYPEWIDTH and REALTYPEWIDTH it is defined thought after processing metis/include/metis.h
+      # and installing the metis.h file in the installation include directory.
+      if [ "${bits64:-0}" -ge 1 ]; then
+        make_flags+=" CONFIG_FLAGS1=-DCMAKE_C_FLAGS='\"-DIDXTYPEWIDTH=64 -DREALTYPEWIDTH=64\"'"
+      else
+        make_flags+=" CONFIG_FLAGS1=-DCMAKE_C_FLAGS='\"-DIDXTYPEWIDTH=32 -DREALTYPEWIDTH=32\"'"
+      fi
+      this_dir="${src_dir}"
+
+      pushd ${this_dir} >/dev/null 2>&1
+        sed -i -e 's@\(CONFIG_FLAGS[[:space:]]*=[[:space:]]*-DCMAKE_VERBOSE_MAKEFILE=1[[:space:]]*\)$@\1 \$(CONFIG_FLAGS1)@' Makefile
+        eval "make "${make_flags}" openmp=ON gklib_path=${gklib_dir} metis_path=${metis_dir} prefix=${loc_dir} config"
+        err=$?
+
+        if [ ${err:-0} -ne 0 ]; then
+          procError "the configuration of the ParMETIS library source failed" \
+                    "tried to run the make command as:" \
+                    "make ${make_flags} gklib_path=${gklib_dir} metis_path=${metis_dir} prefix=${loc_dir} config"
+        fi
+
+        make install
+        err=$?
+
+        if [ ${err:-0} -ne 0 ]; then
+          procError "the compilation of the ParMETIS library failed" \
+                    "tried to run the make command as:" \
+                    "make install"
+        fi
+      popd >/dev/null 2>&1
+      ##########
+    fi
+    #################### END:: 403 ####################
+
+
+    if [ ${compiledLIB:-0} -ge 1 ]; then
+      bin_dir=${inst_dir}/bin
+      lib_dir=${inst_dir}/lib
+      inc_dir=${inst_dir}/include
+
+
+      ##########
+      ### Remove previously installed application files
+      ##########
+      for i in libGKlib.a  libmetis.a  libparmetis.a
+      do
+        if [ -e ${lib_dir}/${i} ]; then
+          rm -f ${lib_dir}/${i}
+          echo "Removing: ${lib_dir}/${i}"
+        fi
+      done
+
+      for i in ${inc_dir}/GKlib.h ${inc_dir}/gk*.h ${inc_dir}/*metis.h
+      do
+        [ -e ${i} ] && rm -f ${i}
+      done
+
+      for i in ${bin_dir}/cmpfillin ${bin_dir}/*metis ${bin_dir}/graphchk ${bin_dir}/mtest ${bin_dir}/ptest
+      do
+        [ -e ${i} ] && rm -f ${i}
+      done
+
+
+      ##########
+      ### Install the application files
+      ##########
+      for i in ${bin_dir} ${lib_dir} ${inc_dir}
+      do
+        if [ ! -d "${i}" ]; then
+          mkdir -p ${i}
+          err=$?
+
+          if [ ${err:-0} -ne 0 ]; then
+            procError "could not create the install directory" \
+                      "  instDIR = ${i}"
+          fi
+        fi
+      done
+
+      install -m 0755 ${loc_dir}/bin/* ${bin_dir}/
+      err=$?
+
+      install -m 0644 ${loc_dir}/lib/* ${lib_dir}/
+      err=$?
+
+      install -m 0644 ${loc_dir}/include/* ${inc_dir}/
+      err=$?
+      ##########
+
+
+      ##########
+      ### Remove/Clean the compiled programs and libraries
+      ##########
+      if [ ${err:-0} -eq 0 ]; then
+        deleteDIR "${loc_dir}"
+
+        find ${src_dir} -type d -name build -exec rm -rf {} \; >/dev/null 2>&1
+      fi
+      ##########
+
+      unset PARMETIS PARMETISHOME PARMETIS_HOME PARMETISDIR PARMETIS_DIR PARMETISPATH PARMETIS_PATH
+      unset METIS METISHOME METIS_HOME METISDIR METIS_DIR METISPATH METIS_PATH
+      unset PARMETISROOT METISROOT PARMETIS_ROOT METIS_ROOT
+
+      export PARMETIS="${inst_dir}"
+      export PARMETISHOME="${inst_dir}"
+      export PARMETIS_HOME="${inst_dir}"
+      export PARMETISDIR="${inst_dir}"
+      export PARMETIS_DIR="${inst_dir}"
+      export PARMETISPATH="${inst_dir}"
+      export PARMETIS_PATH="${inst_dir}"
+ 
+      export METIS="${inst_dir}"
+      export METISHOME="${inst_dir}"
+      export METIS_HOME="${inst_dir}"
+      export METISDIR="${inst_dir}"
+      export METIS_DIR="${inst_dir}"
+      export METISPATH="${inst_dir}"
+      export METIS_PATH="${inst_dir}"
+
+      procWarn "Setting the following variables:" \
+               "   PARMETIS      = "${PARMETIS}" \
+               "   PARMETISHOME  = "${PARMETISHOME}" \
+               "   PARMETIS_HOME = "${PARMETIS_HOME}" \
+               "   PARMETISDIR   = "${PARMETISDIR}" \
+               "   PARMETIS_DIR  = "${PARMETIS_DIR}" \
+               "   PARMETISPATH  = "${PARMETISPATH}" \
+               "   PARMETIS_PATH = "${PARMETIS_PATH}" \
+               "   METIS         = "${METIS}" \
+               "   METISHOME     = "${METISHOME}" \
+               "   METIS_HOME    = "${METIS_HOME}" \
+               "   METISDIR      = "${METISDIR}" \
+               "   METIS_DIR     = "${METIS_DIR}" \
+               "   METISPATH     = "${METISPATH}" \
+               "   METIS_PATH    = "${METIS_PATH}"
+
+      return ${err}
+    fi
+  fi
+  ######################
+  ### END :: thirdparty_open build
+  ######################
+
+
+  ######################
+  ### BEG :: Use pre-compiled libraries
+  ######################
+  if [ ${tpMetisRequested:-0} -le 0 ]; then
+    # Get the location of the pre-compiled third party libraries for PARMETIS.
+    if [ -n "${PARMETISHOME}" ]; then
+      checkDIR -rx "${PARMETISHOME}"
+      if [ $? -eq 0 ]; then
+        tmp_inc="$( find -L ${PARMETISHOME}/include -maxdepth 1 -type f -name "parmetis.h" | head -1 )"
+        tmp_lib="$( find -L ${PARMETISHOME}/lib -maxdepth 1 -type f -name "libparmetis.*" | head -1 )"
+        if [ -n "${tmp_inc:+1}" ] && [ -n "${tmp_lib:+1}" ]; then
+          PARMETISHOME=${PARMETIS_HOME}
+          [ -z "${PARMETISHOME}" ] && PARMETISHOME=${PARMETIS_PATH}
+          [ -z "${PARMETISHOME}" ] && PARMETISHOME=${PARMETISHOME}
+          export PARMETISHOME
+          
+          export METISHOME=${PARMETISHOME}
+          export METIS=${PARMETISHOME}
+          export METIS_PATH=${PARMETISHOME}
+          procWarn "Setting the following variables:" \
+                   "   PARMETISHOME = ${PARMETISHOME}" \
+                   "   METISHOME    = ${METISHOME}" \
+                   "   METIS        = ${METIS}" \
+                   "   METIS_PATH   = ${METIS_PATH}"
+          return 0
+        else
+          procError "Could not locate libparmetis in PARMETISHOME = ${PARMETISHOME}." \
+                    "Is PARMETISHOME environment variable set properly?"
+        fi
+      else
+        procError "PARMETISHOME = ${PARMETISHOME} is not a valid directory." \
+                  "Is PARMETISHOME environment variable set properly?"
+      fi
+    fi
+  fi
+  ######################
+  ### END :: Use pre-compiled libraries
+  ######################
+}
+
+
+###========================================
+### compileFVCOMLibs()
+###
+### Usage:      compileFVCOMLibs src_dir
+###
+### Parameters: src_dir = the application root directory
+###
+### Returns : error status
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### compileFVCOMLibs: Uses environment variables to compile the application.
+###========================================
+compileFVCOMLibs() {
+  local fvcom_dir libs_src_dir src_dir src_tar make_flags
+  local chkLibHome inst_dir bin_dir lib_dir inc_dir
+  local i err tmp_inc tmp_lib chk_component
+
+  local -i bldJUL bldPROJ bldFPROJ
+  
+
+  err=0
+  bldJUL=0
+  bldPROJ=0
+  bldFPROJ=0
+
+
+  ### First check if the user explicitly requested to build FVCOM
+  chk_component="$( toUPPER "${COMPONENT}" )"
+  [ -z "${chk_component}" ] && \
+    chk_component="$( toUPPER "${MY_COMPONENT}" )"
+  chk_component="$( echo "${chk_component}" | sed 's/[[:space:]]/:/g' )"
+
+  if [[ ":${chk_component}:" != *:"FVCOM":* ]]; then
+    return 0
+  fi
+
+
+  ### Get the location of the FVCOM directory
+  checkDIR -rx "${1}"
+  if [ $? -eq 0 ]; then
+    fvcom_dir="${1}"
+  else
+    fvcom_dir="${APP_DIR:+${APP_DIR}/}FVCOM"
+  fi
+
+  ### Get the location of the install directory
+  inst_dir="${APP_DIR:+${APP_DIR}/}THIRDPARTY_INSTALL"
+  bin_dir=${inst_dir}/bin
+  lib_dir=${inst_dir}/lib
+  inc_dir=${inst_dir}/include
+
+
+  ######################
+  ### BEG :: Build the Julian library
+  ### This follows any environment settings.
+  ######################
+  # Get the location of the pre-compiled third party library for JULIAN.
+  chkLibHome=${JULIANHOME:-${JULIAN_HOME}}
+  chkLibHome=${chkLibHome:-${inst_dir}}
+  if [ -n "${chkLibHome}" ]; then
+    checkDIR -rx "${chkLibHome}"
+    if [ $? -eq 0 ]; then
+      tmp_inc="$( find -L ${chkLibHome}/include -maxdepth 1 -type f -name "fjulian.inc" 2>/dev/null )"
+      tmp_lib="$( find -L ${chkLibHome}/lib -maxdepth 1 -type f \( -name "libjulian*.a" -o -name "libjulian*.so*" \) 2>/dev/null )"
+      if [ -n "${tmp_inc:+1}" ] && [ -n "${tmp_lib:+1}" ]; then
+        export JULIANHOME=${chkLibHome}
+        export JULIAN_HOME=${chkLibHome}
+        procWarn "Setting the following variables:" \
+                 "   JULIANHOME  = ${JULIANHOME}" \
+                 "   JULIAN_HOME = ${JULIAN_HOME}" \
+                 "Make sure that the libraries have been compiled with the same compiler."
+        bldJUL=0
+      else
+        unset JULIANHOME JULIAN_HOME
+        bldJUL=1
+        procWarn "Could not locate fjulian.inc and/or libjulian in JULIANHOME = ${chkLibHome}." \
+                  "Is JULIANHOME or JULIAN_HOME environment variable set properly?" \
+                  "Will proceed by building the Julian library internally."
+      fi
+    else
+      unset JULIANHOME JULIAN_HOME
+      bldJUL=1
+      procWarn "Error accessing the location JULIANHOME = ${chkLibHome}." \
+                "Is JULIANHOME or JULIAN_HOME environment variable set properly?" \
+                "Will proceed by building the Julian library internally."
+    fi
+  fi
+
+  ##### Try to build the library #####
+  if [ ${bldJUL:-0} -gt 0 ]; then
+    libs_src_dir=${fvcom_dir}/libs
+    src_tar=${libs_src_dir}/julian.tgz
+    src_dir=${libs_src_dir}/julian
+    if [ -e "${src_tar}" ]; then
+      tar -C ${libs_src_dir} -zxvf ${src_tar}
+      
+      # Build the library
+      pushd ${src_dir} >/dev/null 2>&1
+        make_flags="CC=${CC} FC=${FC:-${F90}} F90=${F90}"
+        make ${make_flags} libjulian tconvert
+        err=$?
+
+        if [ ${err} -eq 0 ]; then
+          for i in ${bin_dir} ${lib_dir} ${inc_dir}
+          do
+            makeDIR "${i}"
+          done
+
+          install -m 0644 libjulian.a ${lib_dir}/
+          err=$?
+
+          install -m 0644 fjulian.inc ${inc_dir}/
+          err=$?
+
+          install -m 0755 tconvert ${bin_dir}/
+          err=$?
+        fi
+      popd >/dev/null 2>&1
+
+      if [ ${err} -eq 0 ]; then
+        export JULIANHOME=${inst_dir}
+        export JULIAN_HOME=${inst_dir}
+        
+        deleteDIR ${src_dir}
+      else
+        procError "Building and installing the Julian library produced errors." \
+                  "Check the errors and modify this script accondingly." \
+                  "This is a required library for FVCOM."
+      fi
+    else
+      procError "The julian archive ${src_tar} was not found." \
+                "Failed to build the julian library." \
+                "This is a required library for FVCOM."
+    fi
+  fi
+  ######################
+  ### END :: Build the Julian library
+  ######################
+
+
+  ######################
+  ### BEG :: Build the PROJ library
+  ### This follows any environment settings.
+  ######################
+  # Get the location of the pre-compiled third party library for PROJ.
+  chkLibHome=${PROJHOME:-${PROJ_HOME}}
+  chkLibHome=${chkLibHome:-${inst_dir}}
+  if [ -n "${chkLibHome}" ]; then
+    checkDIR -rx "${chkLibHome}"
+    if [ $? -eq 0 ]; then
+      tmp_inc="$( find -L ${chkLibHome}/include -maxdepth 1 -type f \( -name "org_proj4_Projections.h" -o -name "proj_api.h" \) 2>/dev/null )"
+      tmp_lib="$( find -L ${chkLibHome}/lib -maxdepth 1 -type f \( -name "libproj*.a" -o -name "libproj*.so*" \) 2>/dev/null )"
+      if [ -n "${tmp_inc:+1}" ] && [ -n "${tmp_lib:+1}" ]; then
+        export PROJHOME=${chkLibHome}
+        export PROJ_HOME=${chkLibHome}
+        procWarn "Setting the following variables:" \
+                 "   PROJHOME  = ${PROJHOME}" \
+                 "   PROJ_HOME = ${PROJ_HOME}" \
+                 "Make sure that the libraries have been compiled with the same compiler."
+        bldPROJ=0
+      else
+        unset PROJHOME PROJ_HOME
+        bldPROJ=1
+        procWarn "Could not locate geodesic.h, pj_list.h and/or libproj* in PROJHOME = ${chkLibHome}." \
+                  "Is PROJHOME or PROJ_HOME environment variable set properly?" \
+                  "Will proceed by building the PROJ library internally."
+      fi
+    else
+      unset PROJHOME PROJ_HOME
+      bldPROJ=1
+      procWarn "Error accessing the location PROJHOME = ${chkLibHome}." \
+                "Is PROJHOME or PROJ_HOME environment variable set properly?" \
+                "Will proceed by building the PROJ library internally."
+    fi
+  fi
+
+  ##### Try to build the PROJ library #####
+  if [ ${bldPROJ:-0} -gt 0 ]; then
+    libs_src_dir=${fvcom_dir}/libs
+    src_tar=${libs_src_dir}/proj.tgz
+    src_dir=${libs_src_dir}/proj
+    if [ -e "${src_tar}" ]; then
+      tar -C ${libs_src_dir} -zxvf ${src_tar}
+      
+      # Build the PROJ library
+      pushd ${src_dir} >/dev/null 2>&1
+        make_flags="CC=${CC} CXX=${CXX:-${CC}} CPP=\"${CC} -E\" FC=${FC:-${F90}} F90=${F90}"
+        make_flags="${make_flags} CFLAGS=\"-g -O2\" CXXFLAGS=\"-g -O2\" FFLAGS=\"-g -O2\""
+
+        eval "./configure --prefix=${inst_dir} --enable-shared=no --without-mutex ${make_flags}"
+        err=$?
+
+        if [ ${err} -eq 0 ]; then
+          make install
+          err=$?
+
+          rm -f ${inst_dir}/lib/libproj.la
+          deleteDIR ${inst_dir}/lib/pkgconfig
+          deleteDIR ${inst_dir}/man
+          deleteDIR ${inst_dir}/share/man
+        fi
+      popd >/dev/null 2>&1
+
+      if [ ${err} -eq 0 ]; then
+        export PROJHOME=${inst_dir}
+        export PROJ_HOME=${inst_dir}
+        
+        deleteDIR ${src_dir}
+      else
+        procWarn "Building and installing the PROJ library produced errors." \
+                  "Check the errors and modify this script accondingly." \
+                  "This is a required library for FVCOM based upon the model's configuration."
+      fi
+    else
+      procWarn "The PROJ archive ${src_tar} was not found." \
+                "Failed to build the PROJ library." \
+                "This is a required library for FVCOM based upon the model's configuration."
+    fi
+  fi
+  ######################
+  ### END :: Build the PROJ library
+  ######################
+
+
+  ######################
+  ### BEG :: Build the FPROJ library
+  ### This follows any environment settings.
+  ######################
+  # Get the location of the pre-compiled third party library for FPROJ.
+  chkLibHome=${FPROJHOME:-${FPROJ_HOME}}
+  chkLibHome=${chkLibHome:-${PROJHOME}}
+  chkLibHome=${chkLibHome:-${PROJ_HOME}}
+  chkLibHome=${chkLibHome:-${inst_dir}}
+  if [ -n "${chkLibHome}" ]; then
+    checkDIR -rx "${chkLibHome}"
+    if [ $? -eq 0 ]; then
+      tmp_inc="$( find -L ${chkLibHome}/include -maxdepth 1 -type f -name "proj*.mod" 2>/dev/null )"
+      tmp_lib="$( find -L ${chkLibHome}/lib -maxdepth 1 -type f \( -name "libfproj*.a" -o -name "libfproj*.so*" \) 2>/dev/null )"
+      if [ -n "${tmp_inc:+1}" ] && [ -n "${tmp_lib:+1}" ]; then
+        export FPROJHOME=${chkLibHome}
+        export FPROJ_HOME=${chkLibHome}
+        procWarn "Setting the following variables:" \
+                 "   FPROJHOME  = ${FPROJHOME}" \
+                 "   FPROJ_HOME = ${FPROJ_HOME}" \
+                 "Make sure that the libraries have been compiled with the same compiler."
+        bldFPROJ=0
+      else
+        unset FPROJHOME FPROJ_HOME
+        bldFPROJ=1
+        procWarn "Could not locate proj*.mod and/or libfproj* in FPROJHOME = ${chkLibHome}." \
+                  "Is FPROJHOME or FPROJ_HOME environment variable set properly?" \
+                  "Will proceed by building the FPROJ library internally."
+      fi
+    else
+      unset FPROJHOME FPROJ_HOME
+      bldFPROJ=1
+      procWarn "Error accessing the location FPROJHOME = ${chkLibHome}." \
+                "Is FPROJHOME or FPROJ_HOME environment variable set properly?" \
+                "Will proceed by building the FPROJ library internally."
+    fi
+  fi
+
+  ##### Try to build the FPROJ library
+  ##### This built depends upon the successful
+  ##### build of the PROJ library above.
+  if [ -n "${PROJHOME}" ] && [ ${bldFPROJ:-0} -gt 0 ]; then
+    libs_src_dir=${fvcom_dir}/libs
+    src_tar=${libs_src_dir}/fproj.tgz
+    src_dir=${libs_src_dir}/fproj
+    if [ -e "${src_tar}" ]; then
+      tar -C ${libs_src_dir} -zxvf ${src_tar}
+      
+      # Build the FPROJ library
+      pushd ${src_dir} >/dev/null 2>&1
+        make_flags="CC=${CC} CXX=${CXX:-${CC}} CPP=\"${CC} -E\" FC=${FC:-${F90}} F90=${F90}"
+        make_flags="${make_flags} CFLAGS=\"-g -O2\" CPPFLAGS=\"-DIFORT\" FFLAGS=\"-g -O2\""
+
+        eval "./configure --prefix=${inst_dir} --with-proj4=${PROJHOME} ${make_flags}"
+        err=$?
+
+        if [ ${err} -eq 0 ]; then
+          make install
+          err=$?
+        fi
+      popd >/dev/null 2>&1
+
+      if [ ${err} -eq 0 ]; then
+        export FPROJHOME=${inst_dir}
+        export FPROJ_HOME=${inst_dir}
+
+        deleteDIR ${src_dir}
+      else
+        procWarn "Building and installing the FPROJ library produced errors." \
+                  "Check the errors and modify this script accondingly." \
+                  "This is a required library for FVCOM based upon the model's configuration."
+      fi
+    else
+      procWarn "The FPROJ archive ${src_tar} was not found." \
+                "Failed to build the FPROJ library." \
+                "This is a required library for FVCOM based upon the model's configuration."
+    fi
+
+  fi
+
+  PROJINCS="-I${PROJHOME}/include"
+  PROJLIBS="-L${PROJHOME}/lib -lfproj4 -lproj -lm"
+  export PROJINCS PROJLIBS
+  
+  INCLUDEPATH=${INCLUDEPATH:+${INCLUDEPATH}:}${JULIANHOME}/include
+  LIBPATH=${LIBPATH:+${LIBPATH}:}${JULIANHOME}/lib
+  export INCLUDEPATH LIBPATH
+}
+
+
+###========================================
+### compileNems()
+###
+### Usage:      compileNems compile_type
+###
+### Parameters: compile_type = one of: clean|distclean or, build|compile
+###
+### Returns : error status
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### compileNems: Uses environment variables to compile a NEMS application.
+###========================================
+compileNems() {
+  local cmp_type cmp_make cmp_comp cmp_mjob
+  local err=0
+
+  [ $# -eq 0 ] && return ${err}
+
+  cmp_type="$( toLOWER "${1}" )"
+  cmp_make=GNUmakefile   # This is the top level NEMS Makefile
+  cmp_comp="${COMPONENT:+COMPONENTS=\"${COMPONENT}\"}"
+  cmp_mjob="${PARMAKE:+-j ${PARMAKE}}"
+  cmp_verb="${VERBOSE:+--debug=${VERBOSE}}"
+
+  if [ -z "${COMPONENT}" ]; then
+    procWarn "No components were specified for NEMS." \
+             "Nothing to do here."
+    return ${err}
+  fi
+
+  case "${cmp_type}" in
+    "clean"|"distclean" )
+      if [ -f  "${cmp_make}" ]; then
+        echo
+        echo "compileNems :: Cleaning: make -f ${cmp_make} ${cmp_type} ${cmp_comp}"
+        eval "make ${cmp_verb} -f ${cmp_make} ${cmp_type} ${cmp_comp}"
+        err=$?
+        if [ "${cmp_type}" = "distclean" ]; then
+          rm -fv exe/NEMS*.x
+        fi
+      else
+        echo "compileNems :: Cleaning: no makefile found: makefile = ${cmp_make}"
+        err=1
+      fi
+      ;;
+    "build"|"compile" )
+      if [ -f  "${cmp_make}" ]; then
+        echo
+        echo "compileNems :: Compiling: make ${cmp_mjob} -f ${cmp_make} ${cmp_type} ${cmp_comp}"
+        eval "make ${cmp_verb} ${cmp_mjob} -f ${cmp_make} ${cmp_type} ${cmp_comp}"
+        err=$?
+      else
+        echo "compileNems :: Compiling: no makefile found: makefile = ${cmp_make}"
+        err=1
+      fi
+      ;;
+    * ) err=0 ;; # Do nothing
+  esac
+
+  return ${err}
+}
+
+###========================================
+### installNems()
+###
+### Usage:      installNems compile_type
+###
+### Parameters: NONE
+###
+### Returns : NONE
+###
+### Exports : NONE
+###
+### Echoes  : NONE
+###
+### installNems: Installs all NEMS compiled components.
+###========================================
+# Need to have specific model components install functions
+# TODO - Panagiotis Velissariou
+installNems() {
+  local cmp_comp cmp_progs icmp
+  local instdir
+  local CPBIN="/bin/cp -fprv"
+  local RMBIN="/bin/rm -frv"
+
+  if [ -z "${COMPONENT}" ]; then
+    procWarn "No components were specified for NEMS." \
+             "Nothing to do here."
+    return ${err}
+  fi
+
+  instdir="ALLBIN_INSTALL"
+  
+  cmp_progs="adcprep adcirc padcirc adcswan padcswan aswip adccmp"
+
+  cmp_comp="${COMPONENT}"
+
+  [ ! -d "${instdir}" ] && mkdir -p ${instdir}
+
+  for icmp in ${cmp_comp}
+  do
+    indir="${icmp}_INSTALL"
+    
+    if [ -d ${indir} ]; then
+      echo
+      echo "   --- Installing from: ${indir} to ${instdir} ---"
+      ${CPBIN} ${indir}/* ${instdir}/
+    fi
+
+    ###### Extra ADCIRC files
+    if [ "${icmp}" == "ADCIRC" ]; then
+      echo
+      echo "   --- Installing from: ${icmp} to ${instdir} ---"
+      for iprog in ${cmp_progs} tide_fac
+      do
+        prog="$( find -L ${icmp} -type f -name ${iprog} | head -1 )"
+
+        if [ -n "${prog:+1}" ]; then
+          ${CPBIN} ${prog} ${instdir}/
+        fi
+      done
+    fi
+    ######
+  done
+
+  ###### Install the NEMS/exe/NEMS* files
+  echo
+  echo "   --- Installing from: NEMS/exe to ${instdir} ---"
+  for iprog in NEMS/exe/NEMS*.x
+  do
+    if [ -f "${iprog}" ]; then
+      ${CPBIN} ${iprog} ${instdir}/
+    fi
+  done
+
+  ###### Remove un-needed files from instdir
+  echo
+  echo "   --- Removing files that are not needed from: ${instdir} ---"
+  ${RMBIN} ${instdir}/*.mk ${instdir}/*.mod
+}
