@@ -235,9 +235,6 @@ compileDateTime
 
 compileMetis
   compileERR=$(( ${compileERR:-0} + $? ))
-
-compileFVCOMLibs
-  compileERR=$(( ${compileERR:-0} + $? ))
 ###========================================
 ### END :: install thirdparty_open libraries and programs
 ###========================================
