@@ -1,0 +1,2 @@
+/usr/bin/ar qc ../lib/libcore.a CMakeFiles/core.dir/schism_glbl.F90.o CMakeFiles/core.dir/schism_msgp.F90.o CMakeFiles/core.dir/schism_assert.F90.o CMakeFiles/core.dir/schism_io.F90.o CMakeFiles/core.dir/scribe_io.F90.o CMakeFiles/core.dir/misc_modules.F90.o CMakeFiles/core.dir/hydraulic_structures.F90.o CMakeFiles/core.dir/schism_version.F90.o
+/usr/bin/ranlib ../lib/libcore.a

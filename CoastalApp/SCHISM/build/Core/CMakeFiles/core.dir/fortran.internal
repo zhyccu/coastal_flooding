@@ -1,0 +1,9 @@
+# The fortran modules provided by this target.
+provides
+ hydraulic_structures.mod
+ misc_modules.mod
+ schism_glbl.mod
+ schism_io.mod
+ schism_msgp.mod
+ schism_version.mod
+ scribe_io.mod
