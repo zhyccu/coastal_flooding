@@ -13,3 +13,7 @@
 	path = CoastalApp/SCHISM/schism-esmf
 	url = https://github.com/zhyccu/schism-esmf
 	branch = nudging
+[submodule "NWM"]
+	path = NWM
+	url = https://github.com/zhyccu/nwm_public_nuopc
+	branch = nudging
